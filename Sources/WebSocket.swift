@@ -135,6 +135,8 @@ open class FoundationStream : NSObject, WSStream, StreamDelegate  {
     private static let sharedWorkQueue = DispatchQueue(label: "com.vluxe.starscream.websocket", attributes: [])
     private var inputStream: InputStream?
     private var outputStream: OutputStream?
+    public var onCreateInputStream: ((InputStream)->Void)?
+    public var onCreateOutputStream: ((OutputStream)->Void)?
     public weak var delegate: WSStreamDelegate?
     let BUFFER_MAX = 4096
 	
@@ -147,7 +149,7 @@ open class FoundationStream : NSObject, WSStream, StreamDelegate  {
         CFStreamCreatePairWithSocketToHost(nil, h, UInt32(port), &readStream, &writeStream)
         inputStream = readStream!.takeRetainedValue()
         outputStream = writeStream!.takeRetainedValue()
-
+        
         #if os(watchOS) //watchOS us unfortunately is missing the kCFStream properties to make this work
         #else
             if enableSOCKSProxy {
@@ -286,7 +288,14 @@ open class FoundationStream : NSObject, WSStream, StreamDelegate  {
      Delegate for the stream methods. Processes incoming bytes
      */
     open func stream(_ aStream: Stream, handle eventCode: Stream.Event) {
-        if eventCode == .hasBytesAvailable {
+        if eventCode == .openCompleted {
+            if let aStream = inputStream {
+                onCreateInputStream?(aStream)
+            } else if let aStream = outputStream {
+                onCreateOutputStream?(aStream)
+            }
+        }
+        else if eventCode == .hasBytesAvailable {
             if aStream == inputStream {
                 delegate?.newBytesInStream()
             }
@@ -306,6 +315,8 @@ public protocol WebSocketDelegate: class {
     func websocketDidDisconnect(socket: WebSocketClient, error: Error?)
     func websocketDidReceiveMessage(socket: WebSocketClient, text: String)
     func websocketDidReceiveData(socket: WebSocketClient, data: Data)
+    func websocketDidCreate(inputStream: InputStream)
+    func websocketDidCreate(outputStream: OutputStream)
 }
 
 //got pongs
@@ -657,6 +668,13 @@ open class WebSocket : NSObject, StreamDelegate, WebSocketClient, WSStreamDelega
         certValidated = !useSSL
         let timeout = request.timeoutInterval * 1_000_000
         stream.delegate = self
+        (stream as? FoundationStream)?.onCreateInputStream = { [weak self] input in
+            self?.delegate?.websocketDidCreate(inputStream: input)
+        }
+        (stream as? FoundationStream)?.onCreateOutputStream = { [weak self] output in
+            self?.delegate?.websocketDidCreate(outputStream: output)
+        }
+        
         stream.connect(url: url, port: port, timeout: timeout, ssl: settings, completion: { [weak self] (error) in
             guard let s = self else {return}
             if error != nil {
